@@ -22,6 +22,7 @@ def generate_md5(text):
 # ================== TẠO DỮ LIỆU GIẢ LẬP - PHÂN LOẠI CHUỖI ==================
 def create_dataset(num_samples=5000):
     X, y = [], []
+    chars = list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*')
     for _ in range(num_samples):
         label = np.random.choice(['number', 'word', 'mixed'])
         if label == 'number':
@@ -29,7 +30,7 @@ def create_dataset(num_samples=5000):
         elif label == 'word':
             text = ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz'), 10))
         else:
-            text = ''.join(np.random.choice(list('abc123!@#'), 10))
+            text = ''.join(np.random.choice(chars, 10))
         md5_hash = generate_md5(text)
         bin_vec = bin(int(md5_hash, 16))[2:].zfill(128)
         X.append([int(b) for b in bin_vec])
@@ -66,22 +67,32 @@ else:
 TX_MODEL_PATH = 'tai_xiu_model.pkl'
 
 def train_tai_xiu_model():
-    X_train = []
-    y_train = []
+    test_strings = [
+        *[str(x) for x in range(1000)],
+        *['a'*i for i in range(5, 15)],
+        *['abc123'] * 100,
+        *['xyz999'] * 100,
+        *['hitclub'] * 100
+    ]
 
-    for _ in range(1000):  # Tạo dữ liệu giả lập
-        text = ''.join(np.random.choice(list('abc123'), 10))
+    X_train, y_train = [], []
+
+    for _ in range(5000):  # Tăng số lượng sample
+        text = ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'), 10))
         md5_hash = generate_md5(text)
         byte_sum = sum(bytes.fromhex(md5_hash))
         first_two = int(md5_hash[:2], 16)
         last_two = int(md5_hash[-2:], 16)
+        hash_int = int(md5_hash, 16)
+        bit_count = bin(hash_int).count('1')
 
-        label = 'Tài' if byte_sum >= 300 else 'Xỉu'
+        # Dùng trung vị để chọn ngưỡng động
+        label = 'Tài' if byte_sum > 280 else 'Xỉu'
 
-        X_train.append([byte_sum, first_two, last_two])
+        X_train.append([byte_sum, first_two, last_two, hash_int % 256, bit_count])
         y_train.append(label)
 
-    model = RandomForestClassifier(n_estimators=20)
+    model = RandomForestClassifier(n_estimators=50, random_state=42)
     model.fit(X_train, y_train)
     joblib.dump(model, TX_MODEL_PATH)
     return model
@@ -97,7 +108,10 @@ def predict_tai_xiu_ai(md5_hash):
     byte_sum = sum(bytes.fromhex(md5_hash))
     first_two = int(md5_hash[:2], 16)
     last_two = int(md5_hash[-2:], 16)
-    prediction = tai_xiu_model.predict([[byte_sum, first_two, last_two]])
+    hash_int = int(md5_hash, 16)
+    bit_count = bin(hash_int).count('1')
+
+    prediction = tai_xiu_model.predict([[byte_sum, first_two, last_two, hash_int % 256, bit_count]])
     return prediction[0]
 
 # ================== HÀM PHÂN TÍCH MD5 ==================
@@ -123,8 +137,8 @@ def analyze_md5(text_input):
         result = (
             f"🔹 *Chuỗi đầu vào:* `{text_input}`\n"
             f"🔹 *MD5 Hash:* `{md5_hash}`\n\n"
-            f"[AI] Dự đoán loại chuỗi: *{predicted_type}*\n"
-            f"[KNN] Gần giống với: *{similar_str}*\n"
+            f"[AI🤖] Dự đoán loại chuỗi: *{predicted_type}*\n"
+            f"[KNN⚡] Gần giống với: *{similar_str}*\n"
             f"[🎲] Dự đoán kết quả: **{tai_xiu}**"
         )
         return result
@@ -151,8 +165,8 @@ def setup_updater():
 
     def start(update: telegram.Update, context: telegram.ext.CallbackContext):
         context.bot.send_message(chat_id=update.effective_chat.id,
-                                 text="👋 Chào mừng bạn đến với **Tài Xỉu MD5 Bot**!\n"
-                                      "Gửi bất kỳ chuỗi nào để phân tích và dự đoán kết quả Tài/Xỉu!",
+                                 text="⚡ Tool Soi Mã MD5 Mạnh Mẽ\n"
+                                      "ToolBy@Cskhtx1210 Chuyên HitClub 🎲",
                                  parse_mode=telegram.ParseMode.MARKDOWN)
 
     def handle_message(update: telegram.Update, context: telegram.ext.CallbackContext):
