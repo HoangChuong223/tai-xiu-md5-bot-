@@ -13,14 +13,13 @@ from flask import Flask, request
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "default_token_for_local_testing")
 PORT = int(os.environ.get("PORT", 5000))
 APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://your-bot.onrender.com ")
-
 bot = telegram.Bot(token=BOT_TOKEN)
 
 # ================== HASHING ==================
 def generate_md5(text):
     return hashlib.md5(text.encode()).hexdigest()
 
-# ================== TẠO DỮ LIỆU GIẢ LẬP ==================
+# ================== TẠO DỮ LIỆU GIẢ LẬP - PHÂN LOẠI CHUỖI ==================
 def create_dataset(num_samples=5000):
     X, y = [], []
     for _ in range(num_samples):
@@ -37,7 +36,7 @@ def create_dataset(num_samples=5000):
         y.append(label)
     return np.array(X), np.array(y)
 
-# ================== LOAD HOẶC TRAIN RANDOM FOREST MODEL ==================
+# ================== TRAIN RANDOM FOREST MODEL ==================
 RF_PATH = 'rf_md5_classifier.pkl'
 if not os.path.exists(RF_PATH):
     print("Training RF model...")
@@ -49,7 +48,7 @@ if not os.path.exists(RF_PATH):
 else:
     rf_model = joblib.load(RF_PATH)
 
-# ================== LOAD HOẶC TRAIN KNN SEARCH ==================
+# ================== TRAIN KNN SEARCH ==================
 known_strings = ['password', 'admin123', 'letmein', '123456', 'hello123']
 known_hashes = [generate_md5(s) for s in known_strings]
 X_knn = np.array([[int(b) for b in bin(int(h, 16))[2:].zfill(128)] for h in known_hashes])
@@ -63,10 +62,48 @@ if not os.path.exists(KNN_PATH):
 else:
     knn_model = joblib.load(KNN_PATH)
 
+# ================== TRAIN MODEL DỰ ĐOÁN TÀI/XỈU ==================
+TX_MODEL_PATH = 'tai_xiu_model.pkl'
+
+def train_tai_xiu_model():
+    X_train = []
+    y_train = []
+
+    for _ in range(1000):  # Tạo dữ liệu giả lập
+        text = ''.join(np.random.choice(list('abc123'), 10))
+        md5_hash = generate_md5(text)
+        byte_sum = sum(bytes.fromhex(md5_hash))
+        first_two = int(md5_hash[:2], 16)
+        last_two = int(md5_hash[-2:], 16)
+
+        label = 'Tài' if byte_sum >= 300 else 'Xỉu'
+
+        X_train.append([byte_sum, first_two, last_two])
+        y_train.append(label)
+
+    model = RandomForestClassifier(n_estimators=20)
+    model.fit(X_train, y_train)
+    joblib.dump(model, TX_MODEL_PATH)
+    return model
+
+# Load hoặc train mô hình Tài/Xỉu
+if not os.path.exists(TX_MODEL_PATH):
+    tai_xiu_model = train_tai_xiu_model()
+else:
+    tai_xiu_model = joblib.load(TX_MODEL_PATH)
+
+# Hàm dự đoán Tài/Xỉu bằng AI
+def predict_tai_xiu_ai(md5_hash):
+    byte_sum = sum(bytes.fromhex(md5_hash))
+    first_two = int(md5_hash[:2], 16)
+    last_two = int(md5_hash[-2:], 16)
+    prediction = tai_xiu_model.predict([[byte_sum, first_two, last_two]])
+    return prediction[0]
+
 # ================== HÀM PHÂN TÍCH MD5 ==================
 def analyze_md5(text_input):
     if len(text_input) > 100:
-        return "⚠️ Chuỗi quá dài. Vui lòng nhập chuỗi dưới 100 ký tự."
+        return "⚠️ Chuỗi quá dài. Vui lòng nhập dưới 100 ký tự."
 
     try:
         md5_hash = generate_md5(text_input)
@@ -80,11 +117,15 @@ def analyze_md5(text_input):
         dist, idx = knn_model.kneighbors(bin_array)
         similar_str = known_strings[idx[0][0]] if dist[0][0] < 0.2 else "Không tìm thấy"
 
+        # Dự đoán Tài/Xỉu
+        tai_xiu = predict_tai_xiu_ai(md5_hash)
+
         result = (
             f"🔹 *Chuỗi đầu vào:* `{text_input}`\n"
             f"🔹 *MD5 Hash:* `{md5_hash}`\n\n"
             f"[AI] Dự đoán loại chuỗi: *{predicted_type}*\n"
-            f"[KNN] Gần giống với: *{similar_str}*"
+            f"[KNN] Gần giống với: *{similar_str}*\n"
+            f"[🎲] Dự đoán kết quả: **{tai_xiu}**"
         )
         return result
     except Exception as e:
@@ -99,7 +140,6 @@ def home():
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
-    """Handle incoming Telegram updates"""
     update = telegram.Update.de_json(request.get_json(force=True), bot)
     updater = setup_updater()
     updater.dispatcher.process_update(update)
@@ -111,15 +151,15 @@ def setup_updater():
 
     def start(update: telegram.Update, context: telegram.ext.CallbackContext):
         context.bot.send_message(chat_id=update.effective_chat.id,
-                                 text="👋 Chào mừng bạn đến với **MD5 Analyzer Bot**!\n"
-                                      "Gửi bất kỳ chuỗi nào để tạo và phân tích MD5.\n"
-                                      "Bot nhẹ, nhanh, thông minh và hoàn toàn miễn phí!",
+                                 text="👋 Chào mừng bạn đến với **Tài Xỉu MD5 Bot**!\n"
+                                      "Gửi bất kỳ chuỗi nào để phân tích và dự đoán kết quả Tài/Xỉu!",
                                  parse_mode=telegram.ParseMode.MARKDOWN)
 
     def handle_message(update: telegram.Update, context: telegram.ext.CallbackContext):
         user_input = update.message.text.strip()
         response = analyze_md5(user_input)
-        context.bot.send_message(chat_id=update.effective_chat.id, text=response,
+        context.bot.send_message(chat_id=update.effective_chat.id,
+                                 text=response,
                                  parse_mode=telegram.ParseMode.MARKDOWN)
 
     dp.add_handler(CommandHandler("start", start))
