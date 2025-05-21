@@ -1,13 +1,18 @@
 import os
 import hashlib
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.neighbors import NearestNeighbors
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 import joblib
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import telegram
 from flask import Flask, request
+from collections import Counter
 
 # ================== CONFIG ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "default_token_for_local_testing")
@@ -19,21 +24,24 @@ bot = telegram.Bot(token=BOT_TOKEN)
 def generate_md5(text):
     return hashlib.md5(text.encode()).hexdigest()
 
-# ================== TẠO DỮ LIỆU GIẢ LẬP - PHÂN LOẠI CHUỖI ==================
-def create_dataset(num_samples=5000):
+# ================== TẠO DỮ LIỆU GIẢ LẬP ==================
+def generate_tai_xiu_data(num_samples=5000):
     X, y = [], []
     chars = list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*')
+    
     for _ in range(num_samples):
-        label = np.random.choice(['number', 'word', 'mixed'])
-        if label == 'number':
-            text = ''.join(np.random.choice(list('0123456789'), 10))
-        elif label == 'word':
-            text = ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz'), 10))
-        else:
-            text = ''.join(np.random.choice(chars, 10))
+        text = ''.join(np.random.choice(chars, 10))
         md5_hash = generate_md5(text)
-        bin_vec = bin(int(md5_hash, 16))[2:].zfill(128)
-        X.append([int(b) for b in bin_vec])
+        byte_sum = sum(bytes.fromhex(md5_hash))
+        first_two = int(md5_hash[:2], 16)
+        last_two = int(md5_hash[-2:], 16)
+        hash_int = int(md5_hash, 16)
+        bit_count = bin(hash_int).count('1')
+
+        # Ngưỡng động dựa trên trung vị tổng byte
+        label = 'Tài' if byte_sum > 280 else 'Xỉu'
+
+        X.append([byte_sum, first_two, last_two, hash_int % 256, bit_count])
         y.append(label)
     return np.array(X), np.array(y)
 
@@ -41,7 +49,7 @@ def create_dataset(num_samples=5000):
 RF_PATH = 'rf_md5_classifier.pkl'
 if not os.path.exists(RF_PATH):
     print("Training RF model...")
-    X, y = create_dataset()
+    X, y = generate_tai_xiu_data(5000)
     X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2)
     rf_model = RandomForestClassifier(n_estimators=20, max_depth=5)
     rf_model.fit(X_train, y_train)
@@ -63,56 +71,75 @@ if not os.path.exists(KNN_PATH):
 else:
     knn_model = joblib.load(KNN_PATH)
 
-# ================== TRAIN MODEL DỰ ĐOÁN TÀI/XỈU ==================
-TX_MODEL_PATH = 'tai_xiu_model.pkl'
+# ================== TRAIN NHIỀU MÔ HÌNH DỰ ĐOÁN TÀI/XỈU ==================
+TX_MODEL_DIR = 'models/'
+os.makedirs(TX_MODEL_DIR, exist_ok=True)
 
-def train_tai_xiu_model():
-    test_strings = [
-        *[str(x) for x in range(1000)],
-        *['a'*i for i in range(5, 15)],
-        *['abc123'] * 100,
-        *['xyz999'] * 100,
-        *['hitclub'] * 100
-    ]
+# Huấn luyện nhiều mô hình
+def train_multiple_models(X_train, y_train):
+    models = {
+        "RandomForest": RandomForestClassifier(n_estimators=50),
+        "GradientBoosting": GradientBoostingClassifier(n_estimators=50),
+        "SVM": SVC(kernel='rbf'),
+        "KNN": KNeighborsClassifier(n_neighbors=5),
+        "LogisticRegression": LogisticRegression(max_iter=1000),
+        "NeuralNet": MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=1000)
+    }
 
-    X_train, y_train = [], []
+    trained_models = {}
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        trained_models[name] = model
+        print(f"[+] {name} đã được train")
 
-    for _ in range(5000):  # Tăng số lượng sample
-        text = ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'), 10))
-        md5_hash = generate_md5(text)
-        byte_sum = sum(bytes.fromhex(md5_hash))
-        first_two = int(md5_hash[:2], 16)
-        last_two = int(md5_hash[-2:], 16)
-        hash_int = int(md5_hash, 16)
-        bit_count = bin(hash_int).count('1')
+    return trained_models
 
-        # Dùng trung vị để chọn ngưỡng động
-        label = 'Tài' if byte_sum > 280 else 'Xỉu'
+# Tạo dữ liệu giả lập & train mô hình
+X, y = generate_tai_xiu_data(5000)
+trained_models = train_multiple_models(X, y)
 
-        X_train.append([byte_sum, first_two, last_two, hash_int % 256, bit_count])
-        y_train.append(label)
+# Lưu tất cả mô hình
+for name, model in trained_models.items():
+    joblib.dump(model, f'{TX_MODEL_DIR}{name.lower()}_tai_xiu_model.pkl')
 
-    model = RandomForestClassifier(n_estimators=50, random_state=42)
-    model.fit(X_train, y_train)
-    joblib.dump(model, TX_MODEL_PATH)
-    return model
+# Load lại mô hình
+def load_all_models():
+    model_paths = {
+        "randomforest": f"{TX_MODEL_DIR}randomforest_tai_xiu_model.pkl",
+        "gradientboosting": f"{TX_MODEL_DIR}gradientboosting_tai_xiu_model.pkl",
+        "svm": f"{TX_MODEL_DIR}svm_tai_xiu_model.pkl",
+        "knn": f"{TX_MODEL_DIR}knn_tai_xiu_model.pkl",
+        "logisticregression": f"{TX_MODEL_DIR}logisticregression_tai_xiu_model.pkl",
+        "neuralnet": f"{TX_MODEL_DIR}neuralnet_tai_xiu_model.pkl"
+    }
 
-# Load hoặc train mô hình Tài/Xỉu
-if not os.path.exists(TX_MODEL_PATH):
-    tai_xiu_model = train_tai_xiu_model()
-else:
-    tai_xiu_model = joblib.load(TX_MODEL_PATH)
+    loaded_models = {}
+    for name, path in model_paths.items():
+        if os.path.exists(path):
+            try:
+                loaded_models[name.capitalize()] = joblib.load(path)
+            except Exception as e:
+                print(f"[!] Không thể load {name}: {str(e)}")
+    return loaded_models
 
-# Hàm dự đoán Tài/Xỉu bằng AI
-def predict_tai_xiu_ai(md5_hash):
+all_models = load_all_models()
+
+# Hàm dự đoán với nhiều mô hình
+def predict_with_all_models(md5_hash):
     byte_sum = sum(bytes.fromhex(md5_hash))
     first_two = int(md5_hash[:2], 16)
     last_two = int(md5_hash[-2:], 16)
     hash_int = int(md5_hash, 16)
     bit_count = bin(hash_int).count('1')
+    features = [[byte_sum, first_two, last_two, hash_int % 256, bit_count]]
 
-    prediction = tai_xiu_model.predict([[byte_sum, first_two, last_two, hash_int % 256, bit_count]])
-    return prediction[0]
+    results = {}
+    for name, model in all_models.items():
+        pred = model.predict(features)[0]
+        results[name] = pred
+
+    final_prediction = Counter(results.values()).most_common(1)[0][0]
+    return results, final_prediction
 
 # ================== HÀM PHÂN TÍCH MD5 ==================
 def analyze_md5(text_input):
@@ -132,14 +159,16 @@ def analyze_md5(text_input):
         similar_str = known_strings[idx[0][0]] if dist[0][0] < 0.2 else "Không tìm thấy"
 
         # Dự đoán Tài/Xỉu
-        tai_xiu = predict_tai_xiu_ai(md5_hash)
+        individual_preds, final_pred = predict_with_all_models(md5_hash)
 
         result = (
             f"🔹 *Chuỗi đầu vào:* `{text_input}`\n"
             f"🔹 *MD5 Hash:* `{md5_hash}`\n\n"
             f"[AI🤖] Dự đoán loại chuỗi: *{predicted_type}*\n"
-            f"[KNN⚡] Gần giống với: *{similar_str}*\n"
-            f"[🎲] Dự đoán kết quả: **{tai_xiu}**"
+            f"[KNN⚡] Gần giống với: *{similar_str}*\n\n"
+            f"[🎲] **Dự đoán từng mô hình:**\n"
+            "\n".join([f"- {k}: {v}" for k, v in individual_preds.items()]) + "\n\n"
+            f"[🏆] Kết luận cuối cùng: **{final_pred}**"
         )
         return result
     except Exception as e:
