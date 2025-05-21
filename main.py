@@ -4,6 +4,7 @@ import hashlib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.model_selection import train_test_split
+from sklearn.neighbors import NearestNeighbors
 import joblib
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import telegram
