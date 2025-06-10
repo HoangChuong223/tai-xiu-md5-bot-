@@ -1,205 +1,119 @@
-
-import os
-import hashlib
+import json
+import time
+import threading
+import websocket
+import ssl
+from flask import Flask, render_template, jsonify
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.naive_bayes import MultinomialNB
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.neighbors import NearestNeighbors
-import joblib
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
-import telegram
-from flask import Flask, request
 
-# ================== CONFIG ==================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "default_token_for_local_testing")
-PORT = int(os.environ.get("PORT", 5000))
-APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://your-bot.onrender.com ")
-bot = telegram.Bot(token=BOT_TOKEN)
+# =================== CONFIG WEBSOCKET ===================
+messages_to_send = [
+    [1, "MiniGame", "SC_dungtrong1205", "hoangchuong", {
+        "info": '{"ipAddress":"125.235.239.187","userId":"cada855a-eff2-4494-8d69-c2a521331d97","username":"SC_dungtrong1205","timestamp":1749396871580,"refreshToken":"e0fdf802d5d24b5aab719bb77ec58fdf.4ddd9fe305264e38b6a0e82d873b56c5"}',
+        "signature": "13E24C3BDBADC4C543536D3E86697E56E14FB2486D42ADB52D2D22020A200C6D85ECEA2D589903C8016C245D87628D64263132B70C39B395B27DF08F33ED05530766F68100872B423556EA1528DD57128C48578404FE5288A00E274899AACD1C4CD0FDA2A4B26ED62018409AC9E263667DB5A84C75B657A91A3E1FBB6945A63D"
+    }],
+    [6, "MiniGame", "taixiuPlugin", {"cmd": 1005}],
+    [6, "MiniGame", "lobbyPlugin", {"cmd": 10001}]
+]
 
-# ================== HASHING ==================
-def generate_md5(text):
-    return hashlib.md5(text.encode()).hexdigest()
-
-# ================== TẠO DỮ LIỆU GIẢ LẬP - PHÂN LOẠI CHUỖI ==================
-def create_dataset(num_samples=5000):
-    X, y = [], []
-    chars = list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*')
-    for _ in range(num_samples):
-        label = np.random.choice(['number', 'word', 'mixed'])
-        if label == 'number':
-            text = ''.join(np.random.choice(list('0123456789'), 10))
-        elif label == 'word':
-            text = ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyz'), 10))
-        else:
-            text = ''.join(np.random.choice(chars, 10))
-        md5_hash = generate_md5(text)
-        bin_vec = bin(int(md5_hash, 16))[2:].zfill(128)
-        X.append([int(b) for b in bin_vec])
-        y.append(label)
-    return np.array(X), np.array(y)
-
-# ================== TRAIN RANDOM FOREST MODEL ==================
-RF_PATH = 'rf_md5_classifier.pkl'
-if not os.path.exists(RF_PATH):
-    print("Training RF model...")
-    X, y = create_dataset()
-    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2)
-    rf_model = RandomForestClassifier(n_estimators=20, max_depth=5)
-    rf_model.fit(X_train, y_train)
-    joblib.dump(rf_model, RF_PATH)
-else:
-    rf_model = joblib.load(RF_PATH)
-
-# ================== TRAIN KNN SEARCH ==================
-known_strings = ['password', 'admin123', 'letmein', '123456', 'hello123']
-known_hashes = [generate_md5(s) for s in known_strings]
-X_knn = np.array([[int(b) for b in bin(int(h, 16))[2:].zfill(128)] for h in known_hashes])
-
-KNN_PATH = 'knn_md5_searcher.pkl'
-if not os.path.exists(KNN_PATH):
-    print("Training KNN model...")
-    knn_model = NearestNeighbors(n_neighbors=1, metric='hamming')
-    knn_model.fit(X_knn)
-    joblib.dump(knn_model, KNN_PATH)
-else:
-    knn_model = joblib.load(KNN_PATH)
-
-# ================== TRAIN MODEL DỰ ĐOÁN TÀI/XỈU ==================
-TX_MODEL_PATH = 'tai_xiu_model.pkl'
-
-def train_tai_xiu_model():
-    test_strings = [
-        *[str(x) for x in range(1000)],
-        *['a'*i for i in range(5, 15)],
-        *['abc123'] * 100,
-        *['xyz999'] * 100,
-        *['hitclub'] * 100
-    ]
-
-    X_train, y_train = [], []
-
-    for _ in range(5000):  # Tăng số lượng sample
-        text = ''.join(np.random.choice(list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'), 10))
-        md5_hash = generate_md5(text)
-        byte_sum = sum(bytes.fromhex(md5_hash))
-        first_two = int(md5_hash[:2], 16)
-        last_two = int(md5_hash[-2:], 16)
-        hash_int = int(md5_hash, 16)
-        bit_count = bin(hash_int).count('1')
-
-        # Thêm đặc trưng mới
-        bitwise_and = byte_sum & hash_int
-        bitwise_or = byte_sum | hash_int
-        bitwise_xor = byte_sum ^ hash_int
-
-        label = 'Tài' if byte_sum > 280 else 'Xỉu'
-
-        X_train.append([
-            byte_sum, 
-            first_two, 
-            last_two, 
-            hash_int % 256, 
-            bit_count, 
-            bitwise_and, 
-            bitwise_or, 
-            bitwise_xor
-        ])
-        y_train.append(label)
-
-    model = GradientBoostingClassifier(n_estimators=50, random_state=42)
-    model.fit(X_train, y_train)
-    joblib.dump(model, TX_MODEL_PATH)
-    return model
-
-# Load hoặc train mô hình Tài/Xỉu
-if not os.path.exists(TX_MODEL_PATH):
-    tai_xiu_model = train_tai_xiu_model()
-else:
-    tai_xiu_model = joblib.load(TX_MODEL_PATH)
-
-# Hàm dự đoán Tài/Xỉu bằng AI
-def predict_tai_xiu_ai(md5_hash):
-    byte_sum = sum(bytes.fromhex(md5_hash))
-    first_two = int(md5_hash[:2], 16)
-    last_two = int(md5_hash[-2:], 16)
-    hash_int = int(md5_hash, 16)
-    bit_count = bin(hash_int).count('1')
-
-    # Thêm đặc trưng mới
-    bitwise_and = byte_sum & hash_int
-    bitwise_or = byte_sum | hash_int
-    bitwise_xor = byte_sum ^ hash_int
-
-    prediction = tai_xiu_model.predict([[byte_sum, first_two, last_two, hash_int % 256, bit_count, bitwise_and, bitwise_or, bitwise_xor]])
-    return prediction[0]
-
-# ================== HÀM PHÂN TÍCH MD5 ==================
-def analyze_md5(text_input):
-    if len(text_input) > 100:
-        return "⚠️ Chuỗi quá dài. Vui lòng nhập dưới 100 ký tự."
-
-    try:
-        md5_hash = generate_md5(text_input)
-        bin_vec = bin(int(md5_hash, 16))[2:].zfill(128)
-        bin_array = np.array([[int(b) for b in bin_vec]])
-
-        # Dự đoán loại chuỗi
-        predicted_type = rf_model.predict(bin_array)[0]
-
-        # Tìm chuỗi gần giống
-        dist, idx = knn_model.kneighbors(bin_array)
-        similar_str = known_strings[idx[0][0]] if dist[0][0] < 0.2 else "Không tìm thấy"
-
-        # Dự đoán Tài/Xỉu
-        tai_xiu = predict_tai_xiu_ai(md5_hash)
-
-        result = (
-            f"🔹 *Chuỗi đầu vào:* `{text_input}`\n"
-            f"🔹 *MD5 Hash:* `{md5_hash}`\n\n"
-            f"[AI🤖] Dự đoán loại chuỗi: *{predicted_type}*\n"
-            f"[KNN⚡] Gần giống với: *{similar_str}*\n"
-            f"[🎲] Dự đoán kết quả: **{tai_xiu}**"
-        )
-        return result
-    except Exception as e:
-        return f"❌ Có lỗi xảy ra: {str(e)}"
-
-# ================== FLASK SERVER ==================
+# =================== FLASK APP ===================
 app = Flask(__name__)
+id_phien = None
+ket_qua = []
+last_prediction = None
 
+# =================== AI MODEL ===================
+X_train = []
+y_train = []
+
+vectorizer = CountVectorizer()
+model = MultinomialNB()
+
+def predict_from_pattern(history):
+    if len(history) < 5:
+        return "t"  # Mặc định nếu chưa có đủ mẫu
+    pattern = "".join(history[-5:])
+    X_new = vectorizer.transform([pattern])
+    return model.predict(X_new)[0]
+
+def update_patterns(history, result):
+    if len(history) >= 5:
+        pattern = "".join(history[-5:])
+        X_train.append(pattern)
+        y_train.append(result)
+        X_vec = vectorizer.fit_transform(X_train)
+        model.fit(X_vec, y_train)
+
+# =================== WEBSOCKET HANDLER ===================
+def on_message(ws, message):
+    global id_phien, ket_qua, last_prediction
+    try:
+        data = json.loads(message)
+    except json.JSONDecodeError:
+        print("Không thể parse message:", message)
+        return
+
+    if isinstance(data, list) and len(data) >= 2 and isinstance(data[1], dict):
+        cmd = data[1].get("cmd")
+        if cmd == 1008 and "sid" in data[1]:
+            new_id = data[1]["sid"]
+            if new_id != id_phien:
+                id_phien = new_id
+                last_prediction = predict_from_pattern(ket_qua)
+
+        elif cmd == 1003 and all(key in data[1] for key in ["d1", "d2", "d3"]):
+            d1, d2, d3 = data[1]["d1"], data[1]["d2"], data[1]["d3"]
+            total = d1 + d2 + d3
+            result_tx = "t" if total > 10 else "x"
+            ket_qua.append(result_tx)
+            if len(ket_qua) > 20:
+                ket_qua.pop(0)
+            update_patterns(ket_qua, result_tx)
+
+def on_error(ws, error):
+    print(f"Lỗi WebSocket: {error}")
+
+def on_close(ws, close_status_code, close_msg):
+    print(f"Kết nối đóng: {close_status_code}, {close_msg}")
+
+def on_open(ws):
+    for msg in messages_to_send:
+        ws.send(json.dumps(msg))
+    print("Gửi thông tin xác thực...")
+
+def run_websocket():
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                "wss://websocket.azhkthg1.net/websocket",
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close
+            )
+            ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+        except Exception as e:
+            print(f"Lỗi chạy WebSocket: {e}")
+            time.sleep(5)
+
+# =================== FLASK ROUTES ===================
 @app.route('/')
-def home():
-    return "Bot đang hoạt động!"
+def index():
+    return render_template('index.html')
 
-@app.route('/webhook', methods=['GET', 'POST'])
-def webhook():
-    update = telegram.Update.de_json(request.get_json(force=True), bot)
-    updater = setup_updater()
-    updater.dispatcher.process_update(update)
-    return 'OK'
+@app.route('/status')
+def status():
+    return jsonify({
+        'id_phien': id_phien,
+        'lich_su': ket_qua[-10:],
+        'du_doan': last_prediction
+    })
 
-def setup_updater():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+if __name__ == "__main__":
+    ws_thread = threading.Thread(target=run_websocket)
+    ws_thread.daemon = True
+    ws_thread.start()
 
-    def start(update: telegram.Update, context: telegram.ext.CallbackContext):
-        context.bot.send_message(chat_id=update.effective_chat.id,
-                                 text="👋 Chào mừng bạn đến với **Tài Xỉu MD5 Bot**!\n"
-                                      "Gửi bất kỳ chuỗi nào để phân tích và dự đoán kết quả Tài/Xỉu!",
-                                 parse_mode=telegram.ParseMode.MARKDOWN)
-
-    def handle_message(update: telegram.Update, context: telegram.ext.CallbackContext):
-        user_input = update.message.text.strip()
-        response = analyze_md5(user_input)
-        context.bot.send_message(chat_id=update.effective_chat.id,
-                                 text=response,
-                                 parse_mode=telegram.ParseMode.MARKDOWN)
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    return updater
-
-# ================== START SERVER ==================
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=PORT)
+    app.run(debug=True, port=5000)
